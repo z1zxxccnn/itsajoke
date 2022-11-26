@@ -31,6 +31,7 @@ from twisted.internet import reactor, endpoints, protocol, error
 from twisted.protocols import basic
 from enum import Enum, unique
 import weakref
+import gc
 
 
 def print_hi(name):
@@ -40,14 +41,17 @@ def print_hi(name):
 
 @unique
 class MyHttpConnectMethodStopReason(Enum):
-    OK = 0,
+    OK = 0
     METHOD_PARSE_ERROR = 1
     HOST_OR_PORT_PARSE_ERROR = 2
-    CONNECTION_NOT_ESTABLISHED = 3
-    CONNECTION_HAVE_BEEN_LOST = 4
-    HOST_OR_PORT_IS_NONE = 5
-    PROXY_CONNECT_FAILED = 6
-    PROXY_CONNECTION_DONE = 7
+    HOST_OR_PORT_IS_NONE = 3
+    HTTP_CONNECTION_DONE = 4
+    HTTP_CONNECTION_LOST = 5
+    PROXY_CONNECTION_NOT_ESTABLISHED = 6
+    PROXY_CONNECTION_HAVE_BEEN_LOST = 7
+    PROXY_CONNECTION_DONE = 8
+    PROXY_CONNECTION_LOST = 9
+    PROXY_CONNECTION_FAILED = 10
 
 
 def MyHttpConnectMethodStopReasonToStr(reason):
@@ -57,60 +61,145 @@ def MyHttpConnectMethodStopReasonToStr(reason):
         return 'method parse error'
     elif reason == MyHttpConnectMethodStopReason.HOST_OR_PORT_PARSE_ERROR:
         return 'host or port parse error'
-    elif reason == MyHttpConnectMethodStopReason.CONNECTION_NOT_ESTABLISHED:
-        return 'connection not established'
-    elif reason == MyHttpConnectMethodStopReason.CONNECTION_HAVE_BEEN_LOST:
-        return 'connection have been lost'
     elif reason == MyHttpConnectMethodStopReason.HOST_OR_PORT_IS_NONE:
         return 'host or port is none'
-    elif reason == MyHttpConnectMethodStopReason.PROXY_CONNECT_FAILED:
-        return 'proxy connect failed'
+    elif reason == MyHttpConnectMethodStopReason.HTTP_CONNECTION_DONE:
+        return 'http connection done'
+    elif reason == MyHttpConnectMethodStopReason.HTTP_CONNECTION_LOST:
+        return 'http_connection lost'
+    elif reason == MyHttpConnectMethodStopReason.PROXY_CONNECTION_NOT_ESTABLISHED:
+        return 'proxy connection not established'
+    elif reason == MyHttpConnectMethodStopReason.PROXY_CONNECTION_HAVE_BEEN_LOST:
+        return 'proxy connection have been lost'
     elif reason == MyHttpConnectMethodStopReason.PROXY_CONNECTION_DONE:
         return 'proxy connection done'
+    elif reason == MyHttpConnectMethodStopReason.PROXY_CONNECTION_LOST:
+        return 'proxy connection lost'
+    elif reason == MyHttpConnectMethodStopReason.PROXY_CONNECTION_FAILED:
+        return 'proxy connection failed'
     else:
         return ''
 
 
 class MyHttpProxyClient(protocol.Protocol):
 
-    def __init__(self, requester, host, port):
+    def __init__(self, requester_ref, host, port):
         super(MyHttpProxyClient, self).__init__()
-        self.requester = requester
+        self.requester_ref = requester_ref
         self.host = host
         self.port = port
 
+    def __del__(self):
+        print(f'MyHttpProxyClient __del__ call'
+              f', host: {self.host}, port: {self.port}')
+
     def dataReceived(self, data):
-        if self.requester.transport is None:
-            print(f'http proxy data received but requester is none'
+        if self.requester_ref is None:
+            print(f'http proxy data received buf requester ref is none'
                   f', host: {self.host}, port: {self.port}')
             self.transport.loseConnection()
             return
 
-        self.requester.transport.write(data)
+        requester = self.requester_ref()
+        if requester is None:
+            print(f'http proxy data received buf requester is none'
+                  f', host: {self.host}, port: {self.port}')
+            self.transport.loseConnection()
+            return
+
+        if requester.transport is None:
+            print(f'http proxy data received but transport of requester is none'
+                  f', host: {self.host}, port: {self.port}')
+            self.transport.loseConnection()
+            return
+
+        requester.transport.write(data)
 
     def connectionMade(self):
-        if self.requester.transport is None:
-            print(f'http proxy connection made but requester is none'
+        if self.requester_ref is None:
+            print(f'http proxy connection made buf requester ref is none'
+                  f', host: {self.host}, port: {self.port}')
+            self.transport.loseConnection()
+            return
+
+        requester = self.requester_ref()
+        if requester is None:
+            print(f'http proxy connection made buf requester is none'
+                  f', host: {self.host}, port: {self.port}')
+            self.transport.loseConnection()
+            return
+
+        if requester.transport is None:
+            print(f'http proxy connection made but transport of requester is none'
                   f', host: {self.host}, port: {self.port}')
             self.transport.loseConnection()
             return
 
         print(f'http proxy connection made, host: {self.host}, port: {self.port}')
-        self.requester.transport.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+        requester.setHttpProxyClient(self)
+        requester.transport.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
 
-    def connectionLost(self, reason):
+
+class MyHttpProxyClientFactory(protocol.ClientFactory):
+
+    def __init__(self, requester_ref, host, port):
+        super(MyHttpProxyClientFactory, self).__init__()
+        self.requester_ref = requester_ref
+        self.host = host
+        self.port = port
+
+    def __del__(self):
+        print(f'MyHttpProxyClientFactory __del__ call'
+              f', host: {self.host}, port: {self.port}')
+
+    def startedConnecting(self, connector):
+        print(f'http proxy client factory started to connect'
+              f', host: {self.host}, port: {self.port}, connector: {connector}')
+
+    def buildProtocol(self, addr):
+        print(f'http proxy client factory connected'
+              f', host: {self.host}, port: {self.port}, addr: {addr}')
+
+        return MyHttpProxyClient(self.requester_ref, self.host, self.port)
+
+    def clientConnectionLost(self, connector, reason):
+        if self.requester_ref is None:
+            print(f'http proxy client factory connection failed buf requester ref is none'
+                  f', host: {self.host}, port: {self.port}')
+            return
+
+        requester = self.requester_ref()
+        if requester is None:
+            print(f'http proxy client factory connection failed buf requester is none'
+                  f', host: {self.host}, port: {self.port}')
+            return
+
         if reason.type == error.ConnectionDone:
             print(f'http proxy close cleanly'
                   f', host: {self.host}, port: {self.port}')
-            self.requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_DONE)
+            requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_DONE)
         elif reason.type == error.ConnectionLost:
             print(f'http proxy close non-cleanly'
                   f', host: {self.host}, port: {self.port}')
-            self.requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_DONE)
+            requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_DONE)
         else:
-            print(f'http proxy connection lost, reason: {reason}'
+            print(f'http proxy connection lost'
+                  f', host: {self.host}, port: {self.port}, reason: {reason}')
+            requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_LOST)
+
+    def clientConnectionFailed(self, connector, reason):
+        if self.requester_ref is None:
+            print(f'http proxy client factory connection failed buf requester ref is none'
                   f', host: {self.host}, port: {self.port}')
-            self.requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECT_FAILED)
+            return
+
+        requester = self.requester_ref()
+        if requester is None:
+            print(f'http proxy client factory connection failed buf requester is none'
+                  f', host: {self.host}, port: {self.port}')
+            return
+
+        requester.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_FAILED)
 
 
 class MyHttpConnectMethod(basic.LineReceiver):
@@ -118,67 +207,74 @@ class MyHttpConnectMethod(basic.LineReceiver):
     def __init__(self, factory):
         super(MyHttpConnectMethod, self).__init__()
         self.factory = factory
-        self.firstRecv = True
+        self.first_recv = True
         self.host = None
         self.port = None
-        self.clientRef = None
+        self.client_ref = None
+
+    def __del__(self):
+        print(f'MyHttpConnectMethod __del__ call'
+              f', host: {self.host}, port: {self.port}')
 
     def connectionMade(self):
         super(MyHttpConnectMethod, self).connectionMade()
-        self.factory.numProtocols += 1
-        print(f'connection made, cur num: {self.factory.numProtocols}')
+        self.factory.num_protocols += 1
+        print(f'connection made, cur num: {self.factory.num_protocols}')
 
     def connectionLost(self, reason):
         super(MyHttpConnectMethod, self).connectionLost(reason)
-        self.factory.numProtocols -= 1
+        self.factory.num_protocols -= 1
         if reason.type == error.ConnectionDone:
-            print(f'close cleanly, cur num: {self.factory.numProtocols}'
+            print(f'close cleanly, cur num: {self.factory.num_protocols}'
                   f', host: {self.host}, port: {self.port}')
+            self.stop(MyHttpConnectMethodStopReason.HTTP_CONNECTION_DONE)
         elif reason.type == error.ConnectionLost:
-            print(f'close non-cleanly, cur num: {self.factory.numProtocols}'
+            print(f'close non-cleanly, cur num: {self.factory.num_protocols}'
                   f', host: {self.host}, port: {self.port}')
+            self.stop(MyHttpConnectMethodStopReason.HTTP_CONNECTION_DONE)
         else:
-            print(f'connection lost, cur num: {self.factory.numProtocols}, reason: {reason}'
+            print(f'connection lost, cur num: {self.factory.num_protocols}, reason: {reason}'
                   f', host: {self.host}, port: {self.port}')
+            self.stop(MyHttpConnectMethodStopReason.HTTP_CONNECTION_LOST)
+
+    def setHttpProxyClient(self, client):
+        self.client_ref = weakref.ref(client)
 
     def start(self):
         if self.host is None or self.port is None:
             self.stop(MyHttpConnectMethodStopReason.HOST_OR_PORT_IS_NONE)
             return
 
-        print(f'http proxy client start, host: {self.host}, port: {self.port}')
-        client = MyHttpProxyClient(self, self.host, self.port)
-        self.clientRef = weakref.ref(client)
-        point = endpoints.TCP4ClientEndpoint(reactor, self.host, self.port)
-        endpoints.connectProtocol(point, client)
+        print(f'http proxy start, host: {self.host}, port: {self.port}')
+        client_factory = MyHttpProxyClientFactory(weakref.ref(self), self.host, self.port)
+        reactor.connectTCP(self.host, self.port, client_factory)
 
     def stop(self, reason):
         print(f'http connect stop, reason: {MyHttpConnectMethodStopReasonToStr(reason)}'
               f', host: {self.host}, port: {self.port}'
-              f', has transport: {self.transport is not None}, has clientRef: {self.clientRef is not None}')
+              f', has transport: {self.transport is not None}, has client_ref: {self.client_ref is not None}')
 
         if self.transport is not None:
             self.transport.loseConnection()
 
-        if self.clientRef is not None:
-            client = self.clientRef()
+        if self.client_ref is not None:
+            client = self.client_ref()
             if client is not None and client.transport is not None:
                 client.transport.loseConnection()
 
     def lineReceived(self, line):
-        if self.line_mode == 1:
-            print(f'line received: {line}')
-
-        if self.firstRecv:
-            self.firstRecv = False
+        if self.first_recv:
+            self.first_recv = False
 
             lst = line.split(b' ')
             if len(lst) != 3 or lst[0] != b'CONNECT' or not lst[2].startswith(b'HTTP/'):
+                print(f'line received but method parse error: {line}')
                 self.stop(MyHttpConnectMethodStopReason.METHOD_PARSE_ERROR)
                 return
 
             lst = lst[1].split(b':')
             if len(lst) != 2 or len(lst[0]) <= 0 or not lst[1].isdigit():
+                print(f'line received but host or port parse error: {line}')
                 self.stop(MyHttpConnectMethodStopReason.HOST_OR_PORT_PARSE_ERROR)
                 return
 
@@ -191,13 +287,13 @@ class MyHttpConnectMethod(basic.LineReceiver):
             self.start()
 
     def rawDataReceived(self, data):
-        if self.clientRef is None:
-            self.stop(MyHttpConnectMethodStopReason.CONNECTION_NOT_ESTABLISHED)
+        if self.client_ref is None:
+            self.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_NOT_ESTABLISHED)
             return
 
-        client = self.clientRef()
+        client = self.client_ref()
         if client is None or client.transport is None:
-            self.stop(MyHttpConnectMethodStopReason.CONNECTION_HAVE_BEEN_LOST)
+            self.stop(MyHttpConnectMethodStopReason.PROXY_CONNECTION_HAVE_BEEN_LOST)
             return
 
         client.transport.write(data)
@@ -207,7 +303,10 @@ class MyHttpConnectMethodFactory(protocol.Factory):
 
     def __init__(self):
         super(MyHttpConnectMethodFactory, self).__init__()
-        self.numProtocols = 0
+        self.num_protocols = 0
+
+    def __del__(self):
+        print(f'MyHttpConnectMethodFactory __del__ call')
 
     def buildProtocol(self, addr):
         return MyHttpConnectMethod(self)
@@ -222,3 +321,4 @@ if __name__ == '__main__':
     reactor.run()
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
