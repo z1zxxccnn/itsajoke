@@ -32,7 +32,7 @@ elif platform.system() == 'Linux':
 
 from twisted.internet import reactor, endpoints, protocol, error
 from twisted.protocols import basic
-from twisted.logger import ILogObserver, formatEvent, globalLogBeginner
+from twisted.logger import formatEvent, ILogObserver, globalLogBeginner
 from zope.interface import implementer
 from enum import Enum, unique
 import weakref
@@ -42,7 +42,8 @@ import weakref
 class MyLogObserver:
 
     def __call__(self, event):
-        print(formatEvent(event))
+        #print(formatEvent(event))
+        pass
 
 
 @unique
@@ -94,10 +95,6 @@ class MyHttpProxyClient(protocol.Protocol):
         self.requester_ref = requester_ref
         self.host = host
         self.port = port
-
-    def __del__(self):
-        print(f'MyHttpProxyClient __del__ call'
-              f', host: {self.host}, port: {self.port}')
 
     def dataReceived(self, data):
         if self.requester_ref is None:
@@ -179,10 +176,6 @@ class MyHttpProxyClientFactory(protocol.ClientFactory):
         self.host = host
         self.port = port
 
-    def __del__(self):
-        print(f'MyHttpProxyClientFactory __del__ call'
-              f', host: {self.host}, port: {self.port}')
-
     def buildProtocol(self, addr):
         print(f'http proxy client factory connected'
               f', host: {self.host}, port: {self.port}, addr: {addr}')
@@ -215,10 +208,6 @@ class MyHttpConnectMethod(basic.LineReceiver):
         self.host = None
         self.port = None
         self.client_ref = None
-
-    def __del__(self):
-        print(f'MyHttpConnectMethod __del__ call'
-              f', host: {self.host}, port: {self.port}')
 
     def connectionMade(self):
         super(MyHttpConnectMethod, self).connectionMade()
@@ -287,7 +276,7 @@ class MyHttpConnectMethod(basic.LineReceiver):
             self.port = int(lst[1])
 
         elif len(line) <= 0:
-            print(f'set raw mode')
+            print(f'set raw mode, host: {self.host}, port: {self.port}')
             self.setRawMode()
             self.start()
 
@@ -309,9 +298,6 @@ class MyHttpConnectMethodFactory(protocol.Factory):
     def __init__(self):
         super(MyHttpConnectMethodFactory, self).__init__()
         self.num_protocols = 0
-
-    def __del__(self):
-        print(f'MyHttpConnectMethodFactory __del__ call')
 
     def buildProtocol(self, addr):
         return MyHttpConnectMethod(self)
